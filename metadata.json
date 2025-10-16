@@ -1,0 +1,5 @@
+{
+  "name": "Vidhyardhi",
+  "description": "A real-time hierarchical student portal for colleges. Admins create Class Representatives (CRs), CRs manage their class roster and attendance, and students view their academic information.",
+  "requestFramePermissions": []
+}
