@@ -1,7 +1,8 @@
-import type { User, Class, AttendanceRecord, Material, Notice, Complaint } from '../types';
+
+import type { User, Class, AttendanceRecord, Material, Notice, Complaint, TimetableEntry, DayOfWeek } from '../types';
 
 // ===================================================================================
-// MOCK DATABASE - In a real app, this would be Firestore
+// MOCK DATABASE 
 // ===================================================================================
 let users: User[] = [
   { uid: 'admin-uid', rollNo: 'au', name: 'Admin User', classId: 'N/A', role: 'admin' },
@@ -17,6 +18,7 @@ let attendance: AttendanceRecord[] = [];
 let materials: Material[] = [];
 let notices: Notice[] = [];
 let complaints: Complaint[] = [];
+let timetables: TimetableEntry[] = [];
 
 // ===================================================================================
 // MOCK FIREBASE AUTH & FIRESTORE API
@@ -25,27 +27,20 @@ let complaints: Complaint[] = [];
 const mockApi = {
   // --- AUTH ---
   login: async (rollNo: string, password?: string): Promise<User | null> => {
-    console.log(`Attempting login for rollNo: ${rollNo}`);
-    // Special hardcoded admin login
     if (rollNo.toLowerCase() === 'au' && password === 'VMAU2025') {
        const { password: _, ...adminUser } = users[0];
        return adminUser as User;
     }
-    // For others, we find the user by roll number and check password.
     const user = users.find(u => u.rollNo.toLowerCase() === rollNo.toLowerCase());
     if (user && user.password === password) {
-      console.log('User found and password matches:', user);
-      // IMPORTANT: Never send the password back to the client.
       const { password: _, ...userWithoutPassword } = user;
       return userWithoutPassword as User;
     }
-    console.log('User not found or password incorrect');
     return null;
   },
 
   // --- ADMIN ACTIONS ---
   createCR: async (rollNo: string, name: string, classId: string, password: string): Promise<User> => {
-    // Check if user already exists
     if (users.some(u => u.rollNo.toLowerCase() === rollNo.toLowerCase())) {
       throw new Error("A user with this Roll Number already exists.");
     }
@@ -62,8 +57,6 @@ const mockApi = {
     if (targetClass) {
         targetClass.crId = newCR.uid;
     }
-    console.log("Created new CR:", newCR);
-    console.log("Current Users:", users);
     const { password: _, ...userToReturn } = newCR;
     return userToReturn as User;
   },
@@ -79,6 +72,25 @@ const mockApi = {
     classes.push(newClass);
     return newClass;
   },
+
+  addTimetableEntry: async (entry: Omit<TimetableEntry, 'id'>): Promise<TimetableEntry> => {
+    const newEntry: TimetableEntry = {
+        ...entry,
+        id: `tt-${Date.now()}`,
+    };
+    timetables.push(newEntry);
+    return newEntry;
+  },
+
+  deleteTimetableEntry: async (id: string): Promise<void> => {
+    timetables = timetables.filter(t => t.id !== id);
+  },
+
+  getTimetableForClass: async (classId: string): Promise<TimetableEntry[]> => {
+    return timetables
+        .filter(t => t.classId === classId)
+        .sort((a, b) => a.startTime.localeCompare(b.startTime));
+  },
   
   getComplaints: async (): Promise<Complaint[]> => {
     return [...complaints].sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
@@ -88,7 +100,6 @@ const mockApi = {
       const complaint = complaints.find(c => c.id === complaintId);
       if (complaint) {
           complaint.status = status;
-          console.log(`Complaint ${complaintId} status updated to ${status}`);
       } else {
           throw new Error("Complaint not found.");
       }
@@ -108,36 +119,45 @@ const mockApi = {
       password,
     };
     users.push(newStudent);
-    console.log("Created new Student:", newStudent);
-    console.log("Current Users:", users);
     const { password: _, ...userToReturn } = newStudent;
     return userToReturn as User;
   },
 
   deleteStudent: async (studentId: string): Promise<void> => {
-    const initialLength = users.length;
     users = users.filter(u => u.uid !== studentId);
-    if (users.length === initialLength) {
-        console.warn(`Student with ID ${studentId} not found for deletion.`);
-        throw new Error("Student not found.");
-    }
-    console.log(`Deleted student ${studentId}. Current users:`, users);
   },
 
   getStudentsByClass: async (classId: string): Promise<User[]> => {
     return users.filter(u => u.classId === classId && u.role === 'student');
   },
 
-  saveAttendance: async (records: {studentId: string, present: boolean}[], date: string): Promise<void> => {
+  saveAttendance: async (records: {studentId: string, present: boolean}[], date: string, subject: string): Promise<void> => {
       records.forEach(record => {
-          const existingRecordIndex = attendance.findIndex(a => a.studentId === record.studentId && a.date === date);
+          // Track by student, date, and SUBJECT
+          const existingRecordIndex = attendance.findIndex(a => a.studentId === record.studentId && a.date === date && a.subject === subject);
           if (existingRecordIndex > -1) {
               attendance[existingRecordIndex].present = record.present;
           } else {
-              attendance.push({ ...record, date });
+              attendance.push({ ...record, date, subject });
           }
       });
-      console.log('Attendance saved for', date, attendance);
+  },
+
+  getAllAttendanceForClass: async (classId: string): Promise<(AttendanceRecord & { studentName: string, rollNo: string })[]> => {
+      const classStudents = users.filter(u => u.classId === classId);
+      const classStudentIds = new Set(classStudents.map(s => s.uid));
+      
+      return attendance
+          .filter(a => classStudentIds.has(a.studentId))
+          .map(a => {
+              const student = classStudents.find(s => s.uid === a.studentId);
+              return {
+                  ...a,
+                  studentName: student?.name || 'Unknown',
+                  rollNo: student?.rollNo || 'N/A'
+              };
+          })
+          .sort((a, b) => b.date.localeCompare(a.date));
   },
 
   createNotice: async (title: string, content: string, classId: string): Promise<Notice> => {
@@ -149,20 +169,7 @@ const mockApi = {
           postedAt: new Date().toISOString()
       };
       notices.push(newNotice);
-      console.log("New notice created:", newNotice);
       return newNotice;
-  },
-  
-  uploadMaterial: async (title: string, classId: string): Promise<Material> => {
-      const newMaterial: Material = {
-          id: `mat-${Date.now()}`,
-          classId,
-          title,
-          fileUrl: 'mock/path/to/file.pdf',
-          uploadedAt: new Date().toISOString()
-      };
-      materials.push(newMaterial);
-      return newMaterial;
   },
 
   // --- STUDENT ACTIONS ---
@@ -175,10 +182,6 @@ const mockApi = {
           .filter(n => n.classId === classId)
           .sort((a, b) => new Date(b.postedAt).getTime() - new Date(a.postedAt).getTime());
   },
-
-  getMaterialsForClass: async (classId: string): Promise<Material[]> => {
-      return materials.filter(m => m.classId === classId);
-  },
   
   submitComplaint: async(student: User, content: string): Promise<Complaint> => {
       const newComplaint: Complaint = {
@@ -190,7 +193,6 @@ const mockApi = {
           status: 'pending'
       };
       complaints.push(newComplaint);
-      console.log("New complaint submitted:", newComplaint);
       return newComplaint;
   },
 
