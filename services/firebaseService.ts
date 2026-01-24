@@ -1,5 +1,5 @@
 
-import type { User, Class, AttendanceRecord, Material, Notice, Complaint, TimetableEntry, DayOfWeek } from '../types';
+import type { User, Class, AttendanceRecord, Notice, Complaint, TimetableEntry, DayOfWeek } from '../types';
 
 // ===================================================================================
 // MOCK DATABASE 
@@ -15,7 +15,6 @@ let classes: Class[] = [
 ];
 
 let attendance: AttendanceRecord[] = [];
-let materials: Material[] = [];
 let notices: Notice[] = [];
 let complaints: Complaint[] = [];
 let timetables: TimetableEntry[] = [];

@@ -9,6 +9,7 @@ export interface User {
   name: string;
   classId: string;
   role: UserRole;
+  semester?: string; // e.g., sem1-1, sem2-2
   password?: string;
 }
 
@@ -23,7 +24,7 @@ export interface TimetableEntry {
   classId: string;
   day: DayOfWeek;
   subject: string;
-  faculty: string;
+  faculty: string; // Faculty name label
   startTime: string; // HH:mm format
   endTime: string;   // HH:mm format
 }
@@ -31,16 +32,8 @@ export interface TimetableEntry {
 export interface AttendanceRecord {
   studentId: string;
   date: string; // YYYY-MM-DD
-  subject: string; // New field for specific session tracking
+  subject: string; 
   present: boolean;
-}
-
-export interface Material {
-  id: string;
-  classId: string;
-  title: string;
-  fileUrl: string; 
-  uploadedAt: string;
 }
 
 export interface Notice {
