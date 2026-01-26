@@ -27,7 +27,6 @@ const supabaseService = {
 
   // --- CR & STUDENT ACTIONS ---
   createCR: async (rollNo: string, name: string, classId: string, password: string, semester: string): Promise<User> => {
-    // Check for existing roll_no explicitly to give a clean error
     const { data: existing } = await supabase.from('users').select('uid').eq('roll_no', rollNo).maybeSingle();
     if (existing) throw new Error(`Roll number ${rollNo} is already in use by another account.`);
 
@@ -55,9 +54,6 @@ const supabaseService = {
   },
 
   createStudent: async (rollNo: string, name: string, cr: User, password: string, semester: string): Promise<User> => {
-    const { data: existing } = await supabase.from('users').select('uid').eq('roll_no', rollNo).maybeSingle();
-    if (existing) throw new Error(`Roll number ${rollNo} is already in use.`);
-
     const { data, error } = await supabase.from('users').insert([{ 
       uid: `student-${Date.now()}`, 
       roll_no: rollNo, 
@@ -124,6 +120,21 @@ const supabaseService = {
     };
   },
 
+  updateTimetableEntry: async (id: string, entry: Partial<TimetableEntry>): Promise<void> => {
+    const { error } = await supabase.from('timetable').update({
+        day: entry.day,
+        subject: entry.subject,
+        faculty: entry.faculty,
+        start_time: entry.startTime,
+        end_time: entry.endTime
+    }).eq('id', id);
+    
+    if (error) throw new Error(error.message);
+    if (entry.classId && entry.subject) {
+        await supabaseService.broadcastTimetableUpdate(entry.classId, entry.subject, 'updated');
+    }
+  },
+
   deleteTimetableEntry: async (id: string): Promise<void> => {
     const { data } = await supabase.from('timetable').select('class_id, subject').eq('id', id).single();
     const { error } = await supabase.from('timetable').delete().eq('id', id);
@@ -166,21 +177,15 @@ const supabaseService = {
   },
 
   removeUser: async (uid: string): Promise<void> => {
-    // Robust cleanup to ensure unique constraints like roll_no are freed
-    // 1. Delete associated attendance
     await supabase.from('attendance').delete().eq('student_id', uid);
-    // 2. Delete associated complaints
     await supabase.from('complaints').delete().eq('student_id', uid);
-    // 3. Finally delete the user
     const { error } = await supabase.from('users').delete().eq('uid', uid);
     if (error) throw new Error(error.message);
   },
 
   removeCR: async (uid: string, classId: string): Promise<void> => {
-    // 1. Clear CR reference from the class first
     const { error: classError } = await supabase.from('classes').update({ cr_id: null }).eq('id', classId);
     if (classError) throw new Error(classError.message);
-    // 2. Perform deep user deletion
     await supabaseService.removeUser(uid);
   },
 
@@ -233,10 +238,14 @@ const supabaseService = {
     await supabase.from('attendance').upsert(payload, { onConflict: 'student_id, date, subject' });
   },
 
-  getAllAttendanceForClass: async (classId: string): Promise<(AttendanceRecord & { studentName: string, rollNo: string })[]> => {
+  getAllAttendanceForClass: async (classId: string, startDate?: string, endDate?: string): Promise<(AttendanceRecord & { studentName: string, rollNo: string })[]> => {
     const { data: students } = await supabase.from('users').select('uid, name, roll_no').eq('class_id', classId);
     if (!students) return [];
-    const { data: attData } = await supabase.from('attendance').select('*').in('student_id', students.map(s => s.uid)).order('date', { ascending: false });
+    const studentIds = students.map(s => s.uid);
+    let query = supabase.from('attendance').select('*').in('student_id', studentIds);
+    if (startDate) query = query.gte('date', startDate);
+    if (endDate) query = query.lte('date', endDate);
+    const { data: attData } = await query.order('date', { ascending: false });
     return (attData || []).map(a => {
       const student = students.find(s => s.uid === a.student_id);
       return { 
@@ -268,8 +277,11 @@ const supabaseService = {
     };
   },
 
-  getAttendanceForStudent: async (studentId: string): Promise<AttendanceRecord[]> => {
-    const { data } = await supabase.from('attendance').select('*').eq('student_id', studentId);
+  getAttendanceForStudent: async (studentId: string, startDate?: string, endDate?: string): Promise<AttendanceRecord[]> => {
+    let query = supabase.from('attendance').select('*').eq('student_id', studentId);
+    if (startDate) query = query.gte('date', startDate);
+    if (endDate) query = query.lte('date', endDate);
+    const { data } = await query.order('date', { ascending: false });
     return (data || []).map(d => ({ 
       studentId: d.student_id, 
       date: d.date, 
@@ -312,6 +324,40 @@ const supabaseService = {
   getClassById: async(classId: string): Promise<Class | undefined> => {
     const { data } = await supabase.from('classes').select('*').eq('id', classId).single();
     return data ? { id: data.id, name: data.name, crId: data.cr_id } : undefined;
+  },
+
+  getAllStudents: async (): Promise<User[]> => {
+    const { data } = await supabase.from('users').select('*').eq('role', 'student').order('name');
+    return (data || []).map(d => ({
+        uid: d.uid, rollNo: d.roll_no, name: d.name, classId: d.class_id, role: 'student', semester: d.semester
+    }));
+  },
+
+  // --- ANALYTICS ---
+  getDailyActivityStats: async (date: string): Promise<any[]> => {
+    const { data: attendance } = await supabase.from('attendance').select('*').eq('date', date);
+    const { data: classes } = await supabase.from('classes').select('id, name');
+    const { data: users } = await supabase.from('users').select('uid, class_id').in('role', ['student', 'cr']);
+
+    if (!classes) return [];
+
+    return classes.map(cls => {
+      const classStudents = users?.filter(u => u.class_id === cls.id) || [];
+      const studentIds = new Set(classStudents.map(s => s.uid));
+      
+      const classAttendance = attendance?.filter(a => studentIds.has(a.student_id)) || [];
+      const uniquePresentCount = new Set(classAttendance.filter(a => a.present).map(a => a.student_id)).size;
+      const total = classStudents.length;
+
+      return {
+        id: cls.id,
+        name: cls.name,
+        total,
+        present: uniquePresentCount,
+        absent: total - uniquePresentCount,
+        percentage: total > 0 ? (uniquePresentCount / total) * 100 : 0
+      };
+    });
   }
 };
 
